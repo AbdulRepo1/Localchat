@@ -49,7 +49,12 @@ class LocalChatService : Service() {
                         type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                     }
                 }
-                startForeground(1, notification, type)
+                try {
+                    startForeground(1, notification, type)
+                } catch (e: Exception) {
+                    Log.e("LocalChatService", "Failed to start foreground with mic", e)
+                    startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                }
             } else {
                 startForeground(1, notification)
             }
@@ -118,7 +123,12 @@ class LocalChatService : Service() {
                         type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                     }
                 }
-                startForeground(1, notification, type)
+                try {
+                    startForeground(1, notification, type)
+                } catch (e: Exception) {
+                    Log.e("LocalChatService", "Failed to start foreground with mic", e)
+                    startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                }
             } else {
                 startForeground(1, notification)
             }
