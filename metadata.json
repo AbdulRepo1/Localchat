@@ -1,0 +1,6 @@
+{
+  "name": "Local Chat",
+  "description": "Direct local network chat using NSD and Sockets",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
