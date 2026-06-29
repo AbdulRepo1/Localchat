@@ -60,7 +60,7 @@ class LocalChatService : Service() {
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LocalChatService::WakeLock").apply {
-                acquire(10 * 60 * 1000L /*10 minutes*/)
+                acquire()
             }
             
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager

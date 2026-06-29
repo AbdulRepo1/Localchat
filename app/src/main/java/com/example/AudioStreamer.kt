@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -32,6 +34,7 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
     private var recordingJob: Job? = null
     private var playingJob: Job? = null
     var isMuted = false
+    private var callScope: CoroutineScope? = null
     
     private val _isSpeakerphoneOn = kotlinx.coroutines.flow.MutableStateFlow(false)
     val isSpeakerphoneOn: kotlinx.coroutines.flow.StateFlow<Boolean> = _isSpeakerphoneOn.asStateFlow()
@@ -56,11 +59,13 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
         }
     }
 
-    suspend fun startCall(peerIp: InetAddress, peerPort: Int, scope: CoroutineScope, defaultSpeaker: Boolean = true) = withContext(Dispatchers.IO) {
+    suspend fun startCall(peerIp: InetAddress, peerPort: Int, defaultSpeaker: Boolean = true) = withContext(Dispatchers.IO) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Log.e("AudioStreamer", "Recording permission not granted")
             return@withContext
         }
+
+        callScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         val bufferSizeIn = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat)
         val bufferSizeOut = AudioTrack.getMinBufferSize(sampleRate, channelConfigOut, audioFormat)
@@ -98,7 +103,7 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
             audioRecord?.startRecording()
             audioTrack?.play()
 
-            recordingJob = scope.launch(Dispatchers.IO) {
+            recordingJob = callScope?.launch(Dispatchers.IO) {
                 val chunkSize = java.lang.Math.min(bufferSizeIn, 1024)
                 val buffer = ByteArray(chunkSize)
                 while (isActive) {
@@ -114,7 +119,7 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
                 }
             }
 
-            playingJob = scope.launch(Dispatchers.IO) {
+            playingJob = callScope?.launch(Dispatchers.IO) {
                 val buffer = ByteArray(4096)
                 while (isActive) {
                     try {
@@ -135,8 +140,8 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
     }
 
     fun stopCall() {
-        recordingJob?.cancel()
-        playingJob?.cancel()
+        callScope?.cancel()
+        callScope = null
         recordingJob = null
         playingJob = null
 
@@ -199,6 +204,10 @@ class AudioStreamer(private val context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type == Sensor.TYPE_PROXIMITY) {
+            if (manualSpeakerOn == true || _isSpeakerphoneOn.value) {
+                return 
+            }
+
             val distance = event.values[0]
             val maxRange = proximitySensor?.maximumRange ?: 5f
             val isNear = distance < maxRange && distance < 5f

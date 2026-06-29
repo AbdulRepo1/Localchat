@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.nsd.NsdManager
@@ -62,6 +63,8 @@ class NetworkManager private constructor(private val context: Context) {
     }
 
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    
     private val SERVICE_TYPE = "_localchat._tcp."
     private var serviceName = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}-${UUID.randomUUID().toString().take(4)}".trim()
 
@@ -89,7 +92,7 @@ class NetworkManager private constructor(private val context: Context) {
     val callState: StateFlow<CallState> = _callState.asStateFlow()
 
     private val prefs = context.getSharedPreferences("LocalChatPrefs", Context.MODE_PRIVATE)
-    val autoIntercomEnabled = MutableStateFlow(prefs.getBoolean("autoIntercom", false))
+    val autoIntercomEnabled = MutableStateFlow(prefs.getBoolean("autoIntercom", true))
 
     fun setAutoIntercomEnabled(enabled: Boolean) {
         autoIntercomEnabled.value = enabled
@@ -97,6 +100,25 @@ class NetworkManager private constructor(private val context: Context) {
     }
 
     val audioStreamer = AudioStreamer(context)
+
+    init {
+        val networkRequest = android.net.NetworkRequest.Builder()
+            .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+
+        connectivityManager.registerNetworkCallback(networkRequest, object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                super.onAvailable(network)
+                // Wi-Fi reconnected, restart NSD services
+                if (_connectionState.value == ConnectionState.DISCONNECTED || _connectionState.value == ConnectionState.SEARCHING) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        cleanup()
+                        startHosting()
+                    }
+                }
+            }
+        })
+    }
 
     private var isDiscovering = false
 
@@ -282,12 +304,20 @@ class NetworkManager private constructor(private val context: Context) {
                             } catch(e: Exception) {}
 
                             if (_callState.value == CallState.INCOMING) {
+                                // NEW: Force the app to the foreground to satisfy Android 11+ Microphone Rules
+                                try {
+                                    val intent = Intent(context, MainActivity::class.java).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {}
+
                                 _callState.value = CallState.ACTIVE
                                 val port = audioStreamer.initSocket()
                                 sendSignaling("CALL_ACK:$port") 
                                 val peerInfo = _connectedPeer.value
                                 if (peerInfo != null) {
-                                    audioStreamer.startCall(peerInfo.host, targetUdpPort, CoroutineScope(Dispatchers.IO), true)
+                                    audioStreamer.startCall(peerInfo.host, targetUdpPort, true)
                                 }
                             }
                         }
@@ -305,7 +335,7 @@ class NetworkManager private constructor(private val context: Context) {
                     val peerInfo = _connectedPeer.value
                     if (peerInfo != null) {
                         CoroutineScope(Dispatchers.IO).launch {
-                            audioStreamer.startCall(peerInfo.host, targetUdpPort, CoroutineScope(Dispatchers.IO))
+                            audioStreamer.startCall(peerInfo.host, targetUdpPort)
                         }
                     }
                 }
@@ -336,7 +366,7 @@ class NetworkManager private constructor(private val context: Context) {
             _callState.value = CallState.ACTIVE
             val peerInfo = _connectedPeer.value
             if (peerInfo != null) {
-                audioStreamer.startCall(peerInfo.host, targetUdpPort, CoroutineScope(Dispatchers.IO))
+                audioStreamer.startCall(peerInfo.host, targetUdpPort)
             }
         }
     }
