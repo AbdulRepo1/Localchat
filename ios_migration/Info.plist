@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+        <string>voip</string>
+    </array>
+    
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LocalChat needs to discover nearby devices on your Wi-Fi network to initiate intercom calls.</string>
+    
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_localchat._tcp</string>
+    </array>
+    
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LocalChat needs microphone access to stream audio during intercom calls.</string>
+</dict>
+</plist>
