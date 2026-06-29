@@ -298,9 +298,9 @@ class NetworkManager private constructor(private val context: Context) {
                             try {
                                 val notification = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
                                 val r = android.media.RingtoneManager.getRingtone(context, notification)
-                                r.play()
+                                r?.play()
                                 kotlinx.coroutines.delay(2000)
-                                r.stop()
+                                r?.stop()
                             } catch(e: Exception) {}
 
                             if (_callState.value == CallState.INCOMING) {

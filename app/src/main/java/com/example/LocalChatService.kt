@@ -94,7 +94,12 @@ class LocalChatService : Service() {
                         if (state == CallState.ACTIVE && ContextCompat.checkSelfPermission(this@LocalChatService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                         }
-                        startForeground(1, buildForegroundNotification(), type)
+                        try {
+                            startForeground(1, buildForegroundNotification(), type)
+                        } catch (e: Exception) {
+                            Log.e("LocalChatService", "Failed to attach Mic flag to Foreground Service", e)
+                            startForeground(1, buildForegroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e("LocalChatService", "Failed to update foreground type", e)

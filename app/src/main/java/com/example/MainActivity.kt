@@ -93,7 +93,18 @@ class MainActivity : ComponentActivity() {
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) {
-                    // Launch hosting regardless (normal permissions are usually auto-granted)
+                    // NEW FIX: Only ask for battery exemption AFTER permissions are handled
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                        try {
+                            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = android.net.Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
                 }
 
                 LaunchedEffect(Unit) {
@@ -111,19 +122,6 @@ class MainActivity : ComponentActivity() {
                     permissionLauncher.launch(permissions.toTypedArray())
                     
                     networkManager.startHosting()
-                    
-                    // 2. Request Battery Optimization Exemption for background running
-                    val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                    if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
-                        try {
-                            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = android.net.Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
                 }
 
                 Surface(
