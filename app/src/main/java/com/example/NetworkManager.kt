@@ -19,6 +19,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
+import com.example.data.local.AppDatabase
+import com.example.data.repository.ChatRepository
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -29,26 +36,10 @@ import java.net.SocketException
 import java.util.UUID
 import kotlinx.coroutines.cancel
 
-data class Peer(
-    val name: String,
-    val host: InetAddress,
-    val port: Int
-)
-
-enum class ConnectionState {
-    DISCONNECTED, SEARCHING, CONNECTED, DISCONNECTING
-}
-
-enum class CallState {
-    IDLE, INCOMING, OUTGOING, ACTIVE
-}
-
-data class ChatMessage(
-    val id: String = UUID.randomUUID().toString(),
-    val isMine: Boolean,
-    val text: String,
-    val timestamp: Long = System.currentTimeMillis()
-)
+typealias Peer = com.example.domain.model.Peer
+typealias ConnectionState = com.example.domain.model.ConnectionState
+typealias CallState = com.example.domain.model.CallState
+typealias ChatMessage = com.example.domain.model.ChatMessage
 
 class NetworkManager private constructor(private val context: Context) {
     companion object {
@@ -66,7 +57,8 @@ class NetworkManager private constructor(private val context: Context) {
     private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     
     private val SERVICE_TYPE = "_localchat._tcp."
-    private var serviceName = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}-${UUID.randomUUID().toString().take(4)}".trim()
+    // VULN-18 FIX: Anonymize service name to prevent hardware fingerprinting
+    private var serviceName = "Peer-${UUID.randomUUID().toString().take(6)}"
 
     private var serverSocket: ServerSocket? = null
     private var activeSocket: Socket? = null
@@ -85,14 +77,27 @@ class NetworkManager private constructor(private val context: Context) {
     private val _discoveredPeers = MutableStateFlow<List<Peer>>(emptyList())
     val discoveredPeers: StateFlow<List<Peer>> = _discoveredPeers.asStateFlow()
 
-    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val chatRepository = ChatRepository(AppDatabase.getDatabase(context).messageDao())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val messages: StateFlow<List<ChatMessage>> = _connectedPeer.flatMapLatest { peer ->
+        if (peer != null) {
+            chatRepository.getMessagesForPeer(peer.name)
+        } else {
+            flowOf(emptyList())
+        }
+    }.stateIn(
+        scope = appScope,
+        started = SharingStarted.Eagerly,
+        initialValue = emptyList()
+    )
 
     private val _callState = MutableStateFlow(CallState.IDLE)
     val callState: StateFlow<CallState> = _callState.asStateFlow()
 
     private val prefs = context.getSharedPreferences("LocalChatPrefs", Context.MODE_PRIVATE)
-    val autoIntercomEnabled = MutableStateFlow(prefs.getBoolean("autoIntercom", true))
+    val autoIntercomEnabled = MutableStateFlow(prefs.getBoolean("autoIntercom", false))
 
     fun setAutoIntercomEnabled(enabled: Boolean) {
         autoIntercomEnabled.value = enabled
@@ -137,8 +142,6 @@ class NetworkManager private constructor(private val context: Context) {
         } catch (e: Exception) {}
         return ips
     }
-    
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     fun startHosting() {
         appScope.launch {
@@ -252,18 +255,21 @@ class NetworkManager private constructor(private val context: Context) {
         }
 
         _connectionState.value = ConnectionState.CONNECTED
-        _messages.value = emptyList() // clear history on new connection
-        
         stopDiscovery() // Stop discovering while connected
 
-        CoroutineScope(Dispatchers.IO).launch {
+        appScope.launch {
             try {
                 while (true) {
-                    val message = reader?.readLine() ?: break
-                    if (message.startsWith("SIGNAL|")) {
-                        handleSignal(message.substringAfter("SIGNAL|"))
+                    val rawMessage = safeReadLine(reader, maxChars = 65536) ?: break
+                    if (rawMessage.startsWith("SIGNAL|")) {
+                        handleSignal(rawMessage.substringAfter("SIGNAL|"))
                     } else {
-                        _messages.update { it + ChatMessage(isMine = false, text = message) }
+                        // VULN-15 & VULN-28 FIX: Cap maximum message length to 4,096 characters
+                        val sanitizedMessage = if (rawMessage.length > 4096) rawMessage.take(4096) else rawMessage
+                        val peerName = _connectedPeer.value?.name ?: "Unknown Peer"
+                        appScope.launch {
+                            chatRepository.saveMessage(peerName = peerName, text = sanitizedMessage, isMine = false)
+                        }
                     }
                 }
             } catch (e: SocketException) {
@@ -276,10 +282,43 @@ class NetworkManager private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * VULN-16 FIX: Reads a line up to maxChars to prevent Out-Of-Memory (OOM) Denial of Service.
+     */
+    private fun safeReadLine(bufferedReader: BufferedReader?, maxChars: Int = 65536): String? {
+        if (bufferedReader == null) return null
+        val sb = StringBuilder()
+        while (true) {
+            val c = bufferedReader.read()
+            if (c == -1) {
+                return if (sb.isEmpty()) null else sb.toString()
+            }
+            if (c == '\n'.code) {
+                break
+            }
+            if (c != '\r'.code) {
+                if (sb.length < maxChars) {
+                    sb.append(c.toChar())
+                } else {
+                    // Line exceeded safety budget! Drain till newline and return truncated
+                    while (true) {
+                        val next = bufferedReader.read()
+                        if (next == -1 || next == '\n'.code) break
+                    }
+                    break
+                }
+            }
+        }
+        return sb.toString()
+    }
+
     suspend fun sendMessage(message: String) = withContext(Dispatchers.IO) {
         if (_connectionState.value == ConnectionState.CONNECTED) {
-            writer?.println(message)
-            _messages.update { it + ChatMessage(isMine = true, text = message) }
+            // VULN-28 FIX: Cap outgoing message size to 4096 chars
+            val safeMessage = if (message.length > 4096) message.take(4096) else message
+            writer?.println(safeMessage)
+            val peerName = _connectedPeer.value?.name ?: "Unknown Peer"
+            chatRepository.saveMessage(peerName = peerName, text = safeMessage, isMine = true)
         }
     }
 
@@ -290,7 +329,14 @@ class NetworkManager private constructor(private val context: Context) {
         val command = parts[0]
         when (command) {
             "CALL_REQ" -> {
-                targetUdpPort = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                val parsedPort = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                // VULN-10 & VULN-05: Ensure port is within legitimate dynamic range
+                if (parsedPort in 1024..65535) {
+                    targetUdpPort = parsedPort
+                } else {
+                    Log.w("NetworkManager", "Invalid UDP port in signaling: $parsedPort")
+                    return
+                }
                 if (_callState.value == CallState.IDLE) {
                     if (autoIntercomEnabled.value) {
                         _callState.value = CallState.INCOMING
@@ -329,7 +375,13 @@ class NetworkManager private constructor(private val context: Context) {
                 }
             }
             "CALL_ACK" -> {
-                targetUdpPort = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                val parsedPort = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                if (parsedPort in 1024..65535) {
+                    targetUdpPort = parsedPort
+                } else {
+                    Log.w("NetworkManager", "Invalid UDP port in CALL_ACK: $parsedPort")
+                    return
+                }
                 if (_callState.value == CallState.OUTGOING) {
                     _callState.value = CallState.ACTIVE
                     val peerInfo = _connectedPeer.value
